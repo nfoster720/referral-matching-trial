@@ -35,7 +35,7 @@ test("shows an empty state when there are no offers", async () => {
   expect(await screen.findByText(/no open offers right now/i)).toBeInTheDocument();
 });
 
-test("claiming an offer calls the claim endpoint", async () => {
+test("claiming an offer calls the claim endpoint and removes the item on success", async () => {
   const fetchMock = stubFetch({
     "/api/offers/mine/": { body: [makeOffer()] },
     "/api/offers/1/claim/": { body: { status: "claimed", claim_id: 1, referral_id: 11 } },
@@ -43,13 +43,33 @@ test("claiming an offer calls the claim endpoint", async () => {
   vi.stubGlobal("fetch", fetchMock);
 
   render(<AgentQueuePage identity={carol} />);
-  await userEvent.click(await screen.findByRole("button", { name: /claim referral/i }));
+  const claimButton = await screen.findByRole("button", { name: /claim referral/i });
+  await userEvent.click(claimButton);
 
   await waitFor(() => {
     const calls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(calls).toContain("/api/offers/1/claim/");
   });
+  expect(await screen.findByText(/Referral lead-00042 claimed successfully/i)).toBeInTheDocument();
   expect(screen.queryByText("Casey Example")).not.toBeInTheDocument();
+});
+
+test("shows an error toast and reloads when claiming fails", async () => {
+  const fetchMock = stubFetch({
+    "/api/offers/mine/": { body: [makeOffer()] },
+    "/api/offers/1/claim/": { status: 400, body: { detail: "already claimed" } },
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<AgentQueuePage identity={carol} />);
+  const claimButton = await screen.findByRole("button", { name: /claim referral/i });
+  await userEvent.click(claimButton);
+
+  await waitFor(() => {
+    expect(screen.getByText(/already claimed/i)).toBeInTheDocument();
+  });
+  expect(screen.queryByText(/claimed successfully/i)).not.toBeInTheDocument();
+  expect(screen.getByText("Casey Example")).toBeInTheDocument();
 });
 
 test("shows an error state when the queue cannot load", async () => {

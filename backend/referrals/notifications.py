@@ -12,7 +12,7 @@ class NotificationError(Exception):
     pass
 
 
-def send_claim_confirmation(claim):
+def send_claim_confirmation(claim, idempotency_key=None):
     """Notify the customer and agent that the referral was claimed.
 
     The pilot gateway is a stub, but it validates recipients the same way the
@@ -20,13 +20,10 @@ def send_claim_confirmation(claim):
     """
     referral = claim.referral
     if not PHONE_PATTERN.match(referral.customer_phone or ""):
-        raise NotificationError(
-            f"Gateway rejected recipient phone {referral.customer_phone!r} "
-            f"for referral {referral.external_id}"
-        )
+        raise NotificationError("recipient_rejected")
     logger.info(
-        "notification sent: referral=%s agent=%s customer=%s",
+        "notification sent: referral=%s agent_id=%s idempotency_key=%s",
         referral.external_id,
-        claim.agent.name,
-        referral.customer_email,
+        claim.agent_id,
+        idempotency_key,
     )

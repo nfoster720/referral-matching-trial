@@ -17,7 +17,8 @@ export class ApiError extends Error {
   body: any;
 
   constructor(status: number, body: any) {
-    super(`API error ${status}`);
+    const detail = typeof body?.detail === "string" ? body.detail : undefined;
+    super(detail ?? `API error ${status}`);
     this.status = status;
     this.body = body;
   }

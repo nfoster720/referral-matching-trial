@@ -15,7 +15,15 @@ from rest_framework.authtoken.models import Token
 
 from referrals import matching
 from referrals.events import record_event
-from referrals.models import Agent, Claim, Offer, Referral, ReferralEvent
+from referrals.models import (
+    Agent,
+    Claim,
+    NotificationOutbox,
+    Offer,
+    ProcessedWebhookEvent,
+    Referral,
+    ReferralEvent,
+)
 
 FIRST_NAMES = [
     "Avery", "Blake", "Casey", "Dakota", "Emerson", "Finley", "Harper", "Jordan",
@@ -50,9 +58,11 @@ class Command(BaseCommand):
 
         self.stdout.write("Clearing existing trial data...")
         ReferralEvent.objects.all().delete()
+        NotificationOutbox.objects.all().delete()
         Claim.objects.all().delete()
         Offer.objects.all().delete()
         Referral.objects.all().delete()
+        ProcessedWebhookEvent.objects.all().delete()
         Agent.objects.all().delete()
         Token.objects.all().delete()
         User.objects.exclude(is_superuser=True).delete()
@@ -61,6 +71,9 @@ class Command(BaseCommand):
         agents = self._seed_agents(rng)
         self._seed_pilot_referrals(rng, agents, now)
         self._seed_history(rng, agents, now, options["history"])
+        for agent in Agent.objects.all():
+            agent.active_referral_count = Claim.objects.filter(agent=agent, active=True).count()
+            agent.save(update_fields=["active_referral_count"])
 
         self.stdout.write(self.style.SUCCESS("\nSeed complete. Sign-in identities:"))
         self.stdout.write(f"  {'username':<22}{'role':<8}token")
@@ -281,8 +294,12 @@ class Command(BaseCommand):
         )
         dup_one = self._new_referral(rng, now, minutes_ago=95, **dup_kwargs)
         self._offer_and_backdate(dup_one, 94, now)
-        dup_two = self._new_referral(rng, now, minutes_ago=93, **dup_kwargs)
-        self._offer_and_backdate(dup_two, 92, now)
+        record_event(
+            dup_one,
+            ReferralEvent.Type.REFERRAL_RECEIVED,
+            actor="intake-webhook",
+            payload={"event_id": "seed-duplicate-event", "duplicate_ignored": True},
+        )
 
         # Referrals stalled after every offer was declined or expired.
         for minutes_ago in (240, 180, 130):
@@ -314,20 +331,26 @@ class Command(BaseCommand):
         record_event(assigned, ReferralEvent.Type.CLAIM_SUCCEEDED,
                      actor=winner.agent.name, payload={"offer_id": winner.id})
 
-        # The double-claim incident Operations reported: two active claims.
+        # The double-claim incident Operations reported: only one active claim is valid;
+        # the conflicting claim is retained as historical state for visibility.
         conflicted = self._new_referral(rng, now, state="CO", minutes_ago=45)
         offers = self._offer_and_backdate(conflicted, 44, now)
         if len(offers) >= 2:
             first, second = offers[0], offers[1]
-            for offer, mins in ((first, 40), (second, 40)):
+            for offer, mins, active in ((first, 40, True), (second, 40, False)):
                 offer.status = Offer.Status.ACCEPTED
                 offer.responded_at = now - timedelta(minutes=mins)
                 offer.save(update_fields=["status", "responded_at"])
-                Claim.objects.create(referral=conflicted, agent=offer.agent)
+                Claim.objects.create(
+                    referral=conflicted,
+                    agent=offer.agent,
+                    active=active,
+                    released_at=(now - timedelta(minutes=mins - 3)) if not active else None,
+                )
                 record_event(conflicted, ReferralEvent.Type.CLAIM_SUCCEEDED,
                              actor=offer.agent.name, payload={"offer_id": offer.id})
             conflicted.status = Referral.Status.ASSIGNED
-            conflicted.assigned_agent = second.agent
+            conflicted.assigned_agent = first.agent
             conflicted.save(update_fields=["status", "assigned_agent"])
 
         # Out-of-market referrals so other agents also have queues.

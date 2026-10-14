@@ -1,5 +1,7 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
 
 
 class Agent(models.Model):
@@ -34,7 +36,7 @@ class Referral(models.Model):
         WARM = "warm"
         HOT = "hot"
 
-    external_id = models.CharField(max_length=64, db_index=True)
+    external_id = models.CharField(max_length=64, unique=True)
     customer_name = models.CharField(max_length=120)
     customer_email = models.EmailField()
     customer_phone = models.CharField(max_length=40)
@@ -80,8 +82,37 @@ class Claim(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     released_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["referral"],
+                condition=Q(active=True),
+                name="unique_active_claim_per_referral",
+            ),
+        ]
+
     def __str__(self):
         return f"Claim {self.pk}: {self.referral_id} by {self.agent_id}"
+
+
+class NotificationOutbox(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        PROCESSING = "processing"
+        SENT = "sent"
+        FAILED = "failed"
+
+    claim = models.OneToOneField(
+        Claim, on_delete=models.CASCADE, related_name="notification_outbox"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
 
 
 class ReferralEvent(models.Model):
@@ -108,3 +139,8 @@ class ReferralEvent(models.Model):
 
     def __str__(self):
         return f"{self.referral_id} {self.event_type}"
+
+
+class ProcessedWebhookEvent(models.Model):
+    event_id = models.CharField(max_length=128, unique=True)
+    received_at = models.DateTimeField(auto_now_add=True)

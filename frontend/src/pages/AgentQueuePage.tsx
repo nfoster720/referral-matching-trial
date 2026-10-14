@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import OfferCard from "../components/OfferCard";
 import type { Identity, Offer } from "../types";
 
@@ -37,29 +37,43 @@ export default function AgentQueuePage({ identity }: Props) {
     load();
   }, [load]);
 
-  function claim(offer: Offer) {
+  async function claim(offer: Offer) {
     setBusy(true);
-    // Clear it from the queue right away so the agent can move on.
-    setOffers((prev) => prev.filter((o) => o.id !== offer.id));
-    setToast(`Referral ${offer.referral.external_id} claimed — nice work!`);
-    api
-      .post(`/api/offers/${offer.id}/claim/`)
-      .catch(() => {
-        setToast("Something went wrong. Please try again.");
-      })
-      .finally(() => setBusy(false));
+    setToast(null);
+
+    try {
+      await api.post(`/api/offers/${offer.id}/claim/`);
+      setOffers((prev) => prev.filter((item) => item.id !== offer.id));
+      setToast(`Referral ${offer.referral.external_id} claimed successfully.`);
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Could not claim this referral. Please refresh and try again.";
+      setToast(message);
+      load();
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function decline(offer: Offer) {
+  async function decline(offer: Offer) {
     setBusy(true);
-    api
-      .post(`/api/offers/${offer.id}/decline/`)
-      .then(() => {
-        setOffers((prev) => prev.filter((o) => o.id !== offer.id));
-        setToast(`Passed on ${offer.referral.external_id}.`);
-      })
-      .catch(() => setToast("Something went wrong. Please try again."))
-      .finally(() => setBusy(false));
+    setToast(null);
+    try {
+      await api.post(`/api/offers/${offer.id}/decline/`);
+      setOffers((prev) => prev.filter((o) => o.id !== offer.id));
+      setToast(`Passed on ${offer.referral.external_id}.`);
+    } catch (err) {
+      setToast(
+        err instanceof ApiError
+          ? err.message
+          : "Could not decline this referral. Please refresh and try again."
+      );
+      load();
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (loading) {

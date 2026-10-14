@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Agent, Claim, Offer, Referral, ReferralEvent
+from .models import Agent, Claim, NotificationOutbox, Offer, Referral, ReferralEvent
 
 
 class AgentSummarySerializer(serializers.ModelSerializer):
@@ -65,7 +65,7 @@ class ClaimSerializer(serializers.ModelSerializer):
 class OpsReferralSerializer(serializers.ModelSerializer):
     assigned_agent = serializers.SerializerMethodField()
     offers = serializers.SerializerMethodField()
-    events = serializers.SerializerMethodField()
+    notifications = serializers.SerializerMethodField()
     age_minutes = serializers.SerializerMethodField()
 
     class Meta:
@@ -82,19 +82,22 @@ class OpsReferralSerializer(serializers.ModelSerializer):
             "assigned_agent",
             "age_minutes",
             "offers",
-            "events",
+            "notifications",
             "created_at",
         ]
 
     def get_assigned_agent(self, obj):
-        if obj.assigned_agent_id is None:
+        if obj.assigned_agent is None:
             return None
-        agent = Agent.objects.get(pk=obj.assigned_agent_id)
-        return {"id": agent.id, "name": agent.name, "email": agent.email}
+        return {
+            "id": obj.assigned_agent.id,
+            "name": obj.assigned_agent.name,
+            "email": obj.assigned_agent.email,
+        }
 
     def get_offers(self, obj):
         results = []
-        for offer in obj.offers.all().order_by("-offered_at"):
+        for offer in obj.offers.all():
             results.append(
                 {
                     "id": offer.id,
@@ -107,8 +110,23 @@ class OpsReferralSerializer(serializers.ModelSerializer):
             )
         return results
 
-    def get_events(self, obj):
-        return ReferralEventSerializer(obj.events.all(), many=True).data
+    def get_notifications(self, obj):
+        notifications = []
+        for claim in obj.claims.all():
+            try:
+                outbox = claim.notification_outbox
+            except NotificationOutbox.DoesNotExist:
+                continue
+            notifications.append(
+                {
+                    "agent": claim.agent.name,
+                    "status": outbox.status,
+                    "attempts": outbox.attempts,
+                    "last_error_code": outbox.last_error_code,
+                    "next_attempt_at": outbox.next_attempt_at,
+                }
+            )
+        return notifications
 
     def get_age_minutes(self, obj):
         from django.utils import timezone

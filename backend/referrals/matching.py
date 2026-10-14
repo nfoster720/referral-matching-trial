@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from . import eligibility
@@ -59,11 +61,84 @@ def score_agent(agent, referral):
 
 
 def build_offers(referral):
-    """Rank agents for a referral and create offers for the top candidates."""
+    """Rank eligible agents for a referral and create offers for the top candidates."""
+    with transaction.atomic():
+        locked_referral = Referral.objects.select_for_update().get(pk=referral.pk)
+        return _build_offers_locked(locked_referral)
+
+
+def advance_referral(referral_id):
+    """Expire overdue offers and safely start another matching batch if needed."""
+    with transaction.atomic():
+        referral = Referral.objects.select_for_update().get(pk=referral_id)
+        if referral.status in (Referral.Status.ASSIGNED, Referral.Status.CLOSED):
+            Offer.objects.filter(
+                referral=referral, status=Offer.Status.PENDING
+            ).update(status=Offer.Status.DECLINED, responded_at=timezone.now())
+            return []
+
+        now = timezone.now()
+        expired = list(
+            Offer.objects.select_for_update().filter(
+                referral=referral,
+                status=Offer.Status.PENDING,
+                expires_at__lte=now,
+            )
+        )
+        for offer in expired:
+            offer.status = Offer.Status.EXPIRED
+            offer.save(update_fields=["status"])
+            record_event(
+                referral,
+                ReferralEvent.Type.OFFER_EXPIRED,
+                actor="system",
+                payload={"offer_id": offer.id},
+            )
+
+        if Offer.objects.filter(referral=referral, status=Offer.Status.PENDING).exists():
+            return []
+        return _build_offers_locked(referral)
+
+
+def process_expired_offers():
+    """Advance every referral with an expired offer; safe to run repeatedly."""
+    referral_ids = list(
+        Offer.objects.filter(
+            status=Offer.Status.PENDING,
+            expires_at__lte=timezone.now(),
+        )
+        .values_list("referral_id", flat=True)
+        .distinct()
+    )
+    advanced = 0
+    for referral_id in referral_ids:
+        advance_referral(referral_id)
+        advanced += 1
+    return advanced
+
+
+def _build_offers_locked(referral):
+    if referral.status in (Referral.Status.ASSIGNED, Referral.Status.CLOSED):
+        return []
+    if Offer.objects.filter(referral=referral, status=Offer.Status.PENDING).exists():
+        return []
+
     now = timezone.now()
+
+    existing_agent_ids = set(
+        Offer.objects.filter(referral=referral).values_list("agent_id", flat=True)
+    )
     candidates = []
-    for agent in Agent.objects.filter(active=True):
+    agents = (
+        Agent.objects.filter(active=True)
+        .exclude(id__in=existing_agent_ids)
+        .annotate(active_claim_count=Count("claims", filter=Q(claims__active=True)))
+    )
+    for agent in agents:
+        agent.active_referral_count = agent.active_claim_count
         score, explanation, snapshot = score_agent(agent, referral)
+        if not snapshot["eligible"]:
+            continue
         candidates.append((score, agent, explanation, snapshot))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
@@ -93,7 +168,6 @@ def build_offers(referral):
             payload={"agent_id": agent.id, "score": round(score, 3)},
         )
 
-    if offers:
-        referral.status = Referral.Status.OFFERED
-        referral.save(update_fields=["status"])
+    referral.status = Referral.Status.OFFERED if offers else Referral.Status.NEW
+    referral.save(update_fields=["status"])
     return offers

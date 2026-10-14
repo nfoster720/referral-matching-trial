@@ -1,6 +1,8 @@
 VENV := .venv
 PY := ../$(VENV)/bin/python
 RUFF := ../$(VENV)/bin/ruff
+DJANGO_DEBUG ?= 1
+export DJANGO_DEBUG
 
 .PHONY: setup db-up db-down seed dev dev-backend dev-frontend test test-backend test-frontend lint
 

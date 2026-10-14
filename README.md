@@ -46,6 +46,80 @@ Authentication uses DRF token auth. The identity dropdown is a development
 convenience backed by `GET /api/identities/` (DEBUG only). For direct API
 calls: `Authorization: Token tok-agent.carol`.
 
+### Windows local development without Docker
+
+For a lightweight local run, initialize the Python environment and frontend
+dependencies once, then use SQLite:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+Set-Location frontend
+npm install
+```
+
+Open a backend PowerShell terminal at the repository root:
+
+```powershell
+$env:DJANGO_DEBUG = "1"
+$env:DB_ENGINE = "sqlite"
+Set-Location backend
+..\.venv\Scripts\python.exe manage.py migrate
+..\.venv\Scripts\python.exe manage.py seed_trial
+..\.venv\Scripts\python.exe manage.py runserver 0.0.0.0:8000
+```
+
+Open the second terminal at the repository root:
+
+```powershell
+Set-Location frontend
+npm run dev
+```
+
+Open http://localhost:5173. SQLite supports local development but does not
+provide PostgreSQL row-lock behavior; use PostgreSQL for concurrency testing.
+
+Offer expiration and failed notification delivery are handled by management
+commands, but the application does not run a scheduler itself. Configure a
+platform scheduler (cron, Task Scheduler, or a managed scheduled job) to run
+both commands every minute, using the same settings and database configuration
+as the web processes:
+
+```text
+python manage.py expire_offers
+python manage.py send_pending_notifications
+```
+
+Run each command as a separate scheduled process with non-overlapping
+invocations where possible. A non-zero command exit must be alerted and retried
+by the scheduler; the commands do not swallow database or unexpected provider
+errors. `expire_offers` reports remaining overdue offers. Alert if that count
+stays above zero across runs. The notification command reports due work left,
+retries, and terminal failures. Operations can inspect the notification status,
+attempt count, and safe error code on the dashboard; alert on any terminal
+failure or sustained due backlog.
+
+Notification delivery is outside the database transaction and claimed through
+a short-lived lease. A process crash can cause a retry after the lease expires.
+The worker passes a stable claim-based idempotency key for a provider that
+supports idempotency, but the pilot gateway is simulated and does not provide
+exactly-once delivery. Configure the real provider's request timeout below the
+five-minute lease and confirm its idempotency-key semantics before production.
+Retries are capped at eight attempts; terminal failures remain visible to
+Operations and require manual investigation/redrive.
+
+Matching does not reserve agent capacity for offers. Concurrent matching runs
+may each send an offer for an agent's final available slot; capacity and
+eligibility are rechecked under the agent lock at claim time, so only the
+allowed number of claims can succeed. This avoids treating an unanswered offer
+as a permanent capacity reservation.
+
+For production, set `DJANGO_DEBUG=0`, a `DJANGO_SECRET_KEY` of at least 50
+characters, a `WEBHOOK_TOKEN` of at least 32 characters, and explicit
+`DJANGO_ALLOWED_HOSTS`. Configure `CORS_ALLOWED_ORIGINS` if the frontend is
+hosted on another origin. The development identity/token endpoint and
+permissive CORS behavior are disabled when debug mode is off.
+
 If port 5433 is busy on your machine, override it:
 `POSTGRES_PORT=5444 make setup` and set `DB_PORT=5444` when running backend
 commands (see `.env.example`).

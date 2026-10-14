@@ -53,6 +53,14 @@ export interface OpsEvent {
   created_at: string;
 }
 
+export interface OpsNotification {
+  agent: string;
+  status: "pending" | "processing" | "sent" | "failed";
+  attempts: number;
+  last_error_code: string;
+  next_attempt_at: string;
+}
+
 export interface OpsReferral {
   id: number;
   external_id: string;
@@ -65,6 +73,14 @@ export interface OpsReferral {
   assigned_agent: { id: number; name: string; email: string } | null;
   age_minutes: number;
   offers: OpsOfferSummary[];
-  events: OpsEvent[];
+  notifications: OpsNotification[];
+  events?: OpsEvent[];
   created_at: string;
+}
+
+export interface OpsReferralPage {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: OpsReferral[];
 }

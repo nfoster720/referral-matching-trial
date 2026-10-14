@@ -51,6 +51,7 @@ export function makeOpsReferral(overrides: Partial<OpsReferral> = {}): OpsReferr
         expires_at: new Date().toISOString(),
       },
     ],
+    notifications: [],
     events: [
       {
         id: 7,
